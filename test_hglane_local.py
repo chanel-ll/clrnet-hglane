@@ -1,7 +1,7 @@
 """로컬 검증 (GPU 불필요): 서버 전용 의존성(mmcv, CUDA nms 등)만 stub, 나머지는 실제 CLRNet 코드.
 
-사용: python -I test_hglane_local.py <CLRNet 저장소 경로> [HG-Lane(CULane_6x5k) 경로]
-(HG-Lane 경로 기본값: <CLRNet>/data/CULane_6x5k)
+사용 (CLRNet 루트에서): python -I clrnet_hglane/test_hglane_local.py [CLRNet 경로] [HG-Lane 경로]
+(기본값: CLRNet = 이 폴더의 상위, HG-Lane = <CLRNet>/data/CULane_6x5k)
 - HGCLRHead: 좌표는 원본과 동일, score == get_lanes의 점수, 후보별 독립
 - HGLane.evaluate: GT를 예측으로 넣어 F1≈1, 가짜 FP 차선은 correct=False, 차선별 TP 합 == 공식 TP
 """
@@ -10,7 +10,7 @@ import sys, json, logging, types
 from unittest.mock import MagicMock
 from pathlib import Path
 HERE = Path(__file__).resolve().parent  # hglane/ 패키지가 있는 곳
-CLRNET = Path(sys.argv[1])
+CLRNET = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent
 DATA = Path(sys.argv[2]) if len(sys.argv) > 2 else CLRNET / 'data' / 'CULane_6x5k'
 sys.path[:0] = [str(CLRNET), str(HERE)]
 import importlib.abc, importlib.machinery

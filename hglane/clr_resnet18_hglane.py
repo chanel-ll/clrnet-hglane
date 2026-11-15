@@ -1,10 +1,15 @@
-# CULane r18 config 상속 → 모델/전처리/test_parameters(conf 0.4 등)는 CULane 베이스라인과 동일
-_base_ = '../configs/clrnet/clr_resnet18_culane.py'
+# NOTE: keep this file ASCII-only. CLRNet's Config reads it with the locale's
+# default encoding, so non-ASCII comments can break on some systems.
 
-heads = dict(type='HGCLRHead')  # 나머지 head 인자는 base에서 병합됨
+# Inherit the CULane r18 config: model / preprocessing / test_parameters
+# (conf_threshold 0.4, ...) stay identical to the CULane baseline.
+# Path is relative to this file: <CLRNet>/clrnet_hglane/hglane/ -> <CLRNet>/configs/
+_base_ = '../../configs/clrnet/clr_resnet18_culane.py'
 
-dataset_path = './data/CULane_6x5k'  # CLRNet 관례: ln -s <HG-Lane 경로> data/CULane_6x5k
-# base의 dataset dict는 이미 type='CULane'으로 만들어져 있으므로 type을 직접 덮어씀
+heads = dict(type='HGCLRHead')  # other head args are merged from base
+
+dataset_path = './data/CULane_6x5k'  # ln -s <HG-Lane path> data/CULane_6x5k
+# base already built `dataset` with type='CULane', so override type directly
 dataset = dict(
     val=dict(type='HGLane', data_root=dataset_path),
     test=dict(type='HGLane', data_root=dataset_path),

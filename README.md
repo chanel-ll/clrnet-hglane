@@ -2,9 +2,9 @@
 
 [CLRNet](https://github.com/Turoad/CLRNet)(CVPR 2022)으로 [HG-Lane](https://github.com/zdc233/HG-Lane) 악천후 차선 벤치마크(`CULane_6x5k`)를 평가하는 확장 코드입니다. (ai_programming Team Project)
 
-> **CLRNet 저장소가 필요합니다.** 이 저장소는 단독 실행 코드가 아니라 CLRNet 루트에 복사해 쓰는 확장입니다. CLRNet의 `CULane`·`CLRHead`·`culane_metric`·`main.py`와 빌드된 CUDA NMS를 그대로 사용합니다.
+> **CLRNet 저장소가 필요합니다.** 이 저장소는 단독 실행 코드가 아니라, **CLRNet 루트 안에 `clrnet_hglane/`으로 clone해서** 쓰는 확장입니다. CLRNet의 `CULane`·`CLRHead`·`culane_metric`·`main.py`와 빌드된 CUDA NMS를 그대로 사용합니다.
 
-- **CLRNet 원본 파일은 하나도 수정하지 않습니다.** 새 파일만 CLRNet 루트에 추가합니다.
+- **CLRNet 원본 파일은 하나도 수정하지 않습니다.** CLRNet 루트에 `clrnet_hglane/` 폴더 하나만 추가되고, 업데이트는 `git pull`로 합니다.
 - 모델, 전처리, 추론, NMS, 공식 평가(`culane_metric`)는 CULane 평가와 **완전히 같습니다.**
 - 원래 출력(예측 `.lines.txt`)에 더해, 날씨별 지표와 차선별 좌표·신뢰도를 담은 `hglane_results.json`을 만듭니다.
 
@@ -18,11 +18,13 @@
 
 | 파일 | 역할 |
 |---|---|
-| `main_hglane.py` | 실행 진입점. `hglane` 패키지를 import해 registry에 등록한 뒤 원본 `main.main()`을 그대로 실행 (인자 동일) |
+| 파일 (`clrnet_hglane/` 안) | 역할 |
+|---|---|
+| `main_hglane.py` | 실행 진입점. CLRNet 루트를 import 경로에 추가하고 `hglane`을 registry에 등록한 뒤 원본 `main.main()`을 그대로 실행 (인자 동일). CLRNet 루트가 아닌 곳에서 실행하면 안내 메시지를 내고 종료 |
 | `hglane/__init__.py` | import 시 `HGLane`(데이터셋), `HGCLRHead`(헤드)를 CLRNet registry에 등록 |
 | `hglane/hglane_dataset.py` | `HGLane(CULane)`: 데이터셋 클래스 (아래 참고) |
 | `hglane/hglane_head.py` | `HGCLRHead(CLRHead)`: 차선별 신뢰도 기록 (아래 참고) |
-| `hglane/clr_resnet18_hglane.py` | config. `_base_ = configs/clrnet/clr_resnet18_culane.py`를 상속하고 head·dataset 종류와 경로만 바꿈 |
+| `hglane/clr_resnet18_hglane.py` | config. `_base_ = '../../configs/clrnet/clr_resnet18_culane.py'`를 상속하고 head·dataset 종류와 경로만 바꿈. CLRNet Config가 locale 기본 인코딩으로 읽기 때문에 **ASCII만 사용** |
 | `test_hglane_local.py` | GPU 없이 하는 로컬 검증 (선택) |
 
 ### 원본과 다르게 동작하는 부분
@@ -43,21 +45,23 @@ HG-Lane은 이미지(1640×590)와 라벨(`.lines.txt`) 포맷이 CULane과 같�
 ## 2. 폴더 구조
 
 ```
-$CLRNET_ROOT/                         # git clone https://github.com/Turoad/CLRNet
+$CLRNET_ROOT/                         # git clone https://github.com/Turoad/CLRNet (빌드 완료)
 ├── main.py                           # 원본 (CULane)
-├── main_hglane.py                    # ★ 추가
-├── test_hglane_local.py              # ★ 추가 (선택)
-├── hglane/                           # ★ 추가
-│   ├── __init__.py
-│   ├── hglane_dataset.py
-│   ├── hglane_head.py
-│   └── clr_resnet18_hglane.py
 ├── clrnet/                           # 원본 패키지 (수정 없음)
 ├── configs/clrnet/clr_resnet18_culane.py   # 원본 (HG-Lane config가 상속)
-├── weights/
-│   └── culane_r18.pth                # CULane 사전학습 가중치 (CLRNet release)
+├── culane_r18.pth                    # CULane 사전학습 가중치 (위치는 자유, --load_from으로 지정)
 ├── data/
-│   └── CULane_6x5k -> <HG-Lane 경로> # 심볼릭 링크
+│   ├── CULane -> <CULane 경로>        # (기존 CULane 평가용)
+│   └── CULane_6x5k -> <HG-Lane 경로>  # ★ 심볼릭 링크 추가
+├── clrnet_hglane/                    # ★ 이 저장소 (git clone)
+│   ├── main_hglane.py
+│   ├── test_hglane_local.py
+│   ├── README.md
+│   └── hglane/
+│       ├── __init__.py
+│       ├── hglane_dataset.py
+│       ├── hglane_head.py
+│       └── clr_resnet18_hglane.py
 └── work_dirs/clr/r18_hglane/<실행시각>/   # 실행 결과 (자동 생성)
 ```
 
@@ -82,16 +86,19 @@ CULane_6x5k/
 ### 3.1 CLRNet 설치
 [CLRNet README](https://github.com/Turoad/CLRNet#installation)대로 환경을 만들고 `python setup.py build develop`까지 합니다. CULane 평가가 돌아가는 환경이면 추가로 설치할 것은 없습니다.
 
-### 3.2 확장 파일 복사
+### 3.2 이 저장소 clone (CLRNet 루트 안에)
 ```bash
-cp -r <이 저장소>/main_hglane.py <이 저장소>/test_hglane_local.py <이 저장소>/hglane $CLRNET_ROOT/
+cd $CLRNET_ROOT
+git clone https://github.com/chanel-ll/clrnet-hglane.git clrnet_hglane
+echo "clrnet_hglane/" >> .git/info/exclude   # (선택) CLRNet 저장소의 git status에서 숨김. 원본 .gitignore는 그대로 둠
 ```
-`hglane/`은 반드시 `$CLRNET_ROOT` 바로 아래에 있어야 합니다. config의 `_base_`가 `../configs/...` 상대경로이기 때문입니다.
+- 위치는 반드시 `$CLRNET_ROOT` 바로 아래여야 합니다. config의 `_base_`가 `../../configs/...` 상대경로이고, `main_hglane.py`가 상위 폴더를 CLRNet 루트로 씁니다. 이 문서의 명령은 폴더 이름이 `clrnet_hglane`이라고 가정합니다.
+- 업데이트: `cd $CLRNET_ROOT/clrnet_hglane && git pull`
 
 ### 3.3 가중치
-[CLRNet releases (models)](https://github.com/Turoad/CLRNet/releases/tag/models)에서 CULane 사전학습 가중치를 받습니다.
+[CLRNet releases (models)](https://github.com/Turoad/CLRNet/releases/tag/models)에서 CULane 사전학습 가중치를 받습니다. CULane 평가에 쓰던 가중치가 있으면 그대로 쓰면 됩니다.
 ```bash
-mkdir -p $CLRNET_ROOT/weights && cd $CLRNET_ROOT/weights
+cd $CLRNET_ROOT
 wget https://github.com/Turoad/CLRNet/releases/download/models/culane_r18.pth.zip
 unzip culane_r18.pth.zip        # → culane_r18.pth
 ```
@@ -107,18 +114,21 @@ r34·r101·dla34를 쓰려면 같은 방식으로 `_base_`만 바꾼 config를 �
 cd $CLRNET_ROOT && mkdir -p data
 ln -s /path/to/CULane_6x5k data/CULane_6x5k
 ```
-경로를 직접 지정하려면 `hglane/clr_resnet18_hglane.py`의 `dataset_path`를 수정하세요.
+경로를 직접 지정하려면 `clrnet_hglane/hglane/clr_resnet18_hglane.py`의 `dataset_path`를 수정하세요.
+`data/`는 CLRNet `.gitignore`에 들어 있어서, 실행할 때 `work_dir/code/`로 복사되지 않습니다. 데이터를 CLRNet 루트에 직접 두면 `.lines.txt`가 매번 복사되니 `data/` 링크 방식을 권장합니다.
 
 ---
 
 ## 4. 실행
 
+**반드시 `$CLRNET_ROOT`에서 실행합니다.** CLRNet이 `./.gitignore`, `./data`, `work_dirs`를 현재 폴더 기준으로 찾기 때문입니다.
 ```bash
 cd $CLRNET_ROOT
-python main_hglane.py hglane/clr_resnet18_hglane.py --test --load_from weights/culane_r18.pth --gpus 0
+python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane.py \
+    --test --load_from culane_r18.pth --gpus 0
 ```
 - 인자는 원본 `main.py`와 같습니다. `--validate`도 같은 HG-Lane test 목록으로 평가합니다. `--view`를 붙이면 시각화 이미지도 저장합니다.
-- 비교용 CULane 평가는 원본 그대로 `python main.py configs/clrnet/clr_resnet18_culane.py --test --load_from weights/culane_r18.pth --gpus 0`로 합니다.
+- 비교용 CULane 평가는 원본 그대로 `python main.py configs/clrnet/clr_resnet18_culane.py --test --load_from culane_r18.pth --gpus 0`로 합니다.
 
 로그 끝부분 예:
 ```
@@ -144,7 +154,7 @@ metric: 0.xxxx          # 전체 6,000장 F1@50
 ```jsonc
 {
   "meta": {
-    "checkpoint": "weights/culane_r18.pth",
+    "checkpoint": "culane_r18.pth",
     "conf_threshold": 0.4, "nms_thres": 50, "iou_threshold": 0.5,
     "img_w": 1640, "img_h": 590, "created": "..."
   },
@@ -181,7 +191,9 @@ metric: 0.xxxx          # 전체 6,000장 F1@50
 ## 6. 로컬 검증 (GPU 불필요)
 
 ```bash
-python -I test_hglane_local.py $CLRNET_ROOT [HG-Lane 경로]   # 기본값: $CLRNET_ROOT/data/CULane_6x5k
+cd $CLRNET_ROOT
+python -I clrnet_hglane/test_hglane_local.py [CLRNet 경로] [HG-Lane 경로]
+# 기본값: CLRNet = clrnet_hglane/의 상위 폴더, HG-Lane = <CLRNet>/data/CULane_6x5k
 ```
 서버 전용 의존성(CUDA nms, mmcv 등)만 가짜 모듈로 대체하고, 실제 CLRNet 코드와 HG-Lane test 6,000장으로 다음을 확인합니다.
 - `HGCLRHead`: 차선 좌표가 원본 `CLRHead`와 같음. `score`가 원본 필터링 점수와 같음. 후보마다 독립적으로 계산됨.
