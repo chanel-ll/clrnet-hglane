@@ -1,6 +1,6 @@
-# CLRNet × HG-Lane 평가 확장
+# CLRNet × HG-Lane 평가·파인튜닝 확장
 
-[CLRNet](https://github.com/Turoad/CLRNet)(CVPR 2022)으로 [HG-Lane](https://github.com/zdc233/HG-Lane) 악천후 차선 벤치마크(`CULane_6x5k`)를 평가하는 확장 코드입니다. (ai_programming Team Project)
+[CLRNet](https://github.com/Turoad/CLRNet)(CVPR 2022)으로 [HG-Lane](https://github.com/zdc233/HG-Lane) 악천후 차선 벤치마크(`CULane_6x5k`)를 평가하고 파인튜닝하는 확장 코드입니다. (ai_programming Team Project)
 
 > **CLRNet 저장소가 필요합니다.** 이 저장소는 단독 실행 코드가 아니라, **CLRNet 루트 안에 `clrnet_hglane/`으로 clone해서** 쓰는 확장입니다. CLRNet의 `CULane`·`CLRHead`·`culane_metric`·`main.py`와 빌드된 CUDA NMS를 그대로 사용합니다.
 
@@ -16,16 +16,21 @@
 
 ### 추가한 파일 (수정한 원본 파일: 없음)
 
-| 파일 | 역할 |
-|---|---|
 | 파일 (`clrnet_hglane/` 안) | 역할 |
 |---|---|
-| `main_hglane.py` | 실행 진입점. CLRNet 루트를 import 경로에 추가하고 `hglane`을 registry에 등록한 뒤 원본 `main.main()`을 그대로 실행 (인자 동일). CLRNet 루트가 아닌 곳에서 실행하면 안내 메시지를 내고 종료 |
-| `hglane/__init__.py` | import 시 `HGLane`(데이터셋), `HGCLRHead`(헤드)를 CLRNet registry에 등록 |
-| `hglane/hglane_dataset.py` | `HGLane(CULane)`: 데이터셋 클래스 (아래 참고) |
-| `hglane/hglane_head.py` | `HGCLRHead(CLRHead)`: 차선별 신뢰도 기록 (아래 참고) |
-| `hglane/clr_resnet18_hglane.py` | config. `_base_ = '../../configs/clrnet/clr_resnet18_culane.py'`를 상속하고 head·dataset 종류와 경로만 바꿈. CLRNet Config가 locale 기본 인코딩으로 읽기 때문에 **ASCII만 사용** |
+| `main_hglane.py` | 실행 진입점. CLRNet 루트를 import 경로에 추가하고, `hglane`을 registry에 등록하고, 원본 `main` 모듈의 `Runner`를 `HGRunner`로 바꾼 뒤 원본 `main()`을 그대로 실행 (인자 동일). CLRNet 루트가 아닌 곳에서 실행하면 안내 메시지를 내고 종료 |
+| `hglane/__init__.py` | `torch`를 먼저 import(아래 참고)한 뒤 `HGLane`·`HGCLRHead`·`HGDetector`를 CLRNet registry에 등록 |
+| `hglane/hglane_dataset.py` | `HGLane(CULane)`: 데이터셋 클래스 (train / val / test) |
+| `hglane/hglane_head.py` | `HGCLRHead(CLRHead)`: 차선별 신뢰도 기록 |
+| `hglane/hglane_net.py` | `HGDetector(Detector)`: **E2 부분 파인튜닝**. 백본 고정 (가중치 + BatchNorm 통계) |
+| `hglane/hglane_runner.py` | `HGRunner(Runner)`: 학습 중 val F1@50이 최고일 때 `ckpt/best.pth` 저장 |
+| `hglane/clr_resnet18_hglane.py` | 평가 config. `_base_ = '../../configs/clrnet/clr_resnet18_culane.py'`를 상속하고 head·dataset 종류와 경로만 바꿈 |
+| `hglane/clr_resnet18_hglane_ft.py` | 공통 파인튜닝 config (= **E1** 전체 파인튜닝). HG-Lane train으로 학습, val로 검증 |
+| `hglane/clr_resnet18_hglane_e2.py` | **E2** config. 공통 파인튜닝 config에서 `net`만 `HGDetector`로 바꿈 |
+| `sbatch/*.sh` | Slurm 제출 스크립트 (HG-Lane test 평가, E2 학습) |
 | `test_hglane_local.py` | GPU 없이 하는 로컬 검증 (선택) |
+
+config 파일은 모두 **ASCII만 사용**합니다. CLRNet Config가 locale 기본 인코딩으로 파일을 읽기 때문입니다.
 
 ### 원본과 다르게 동작하는 부분
 
@@ -39,6 +44,15 @@ HG-Lane은 이미지(1640×590)와 라벨(`.lines.txt`) 포맷이 CULane과 같�
 
 - `score` = 차선 후보 하나의 (배경, 차선) 2-class softmax = `sigmoid(logit_diff)`. 원본 `get_lanes`가 `conf_threshold` 필터링에 쓰는 값과 같습니다. 후보마다 따로 계산되므로 다른 차선의 영향을 받지 않습니다.
 - `score`는 **보정(calibration)되지 않은 값**입니다. 보정이 필요하면 `logit_diff`로 temperature scaling을 하거나, JSON의 `correct` 플래그로 점수 구간별 정확도를 계산하세요.
+
+학습(파인튜닝)에서는 CULane config를 그대로 물려받으면 다음 문제가 추가로 생깁니다.
+
+| # | 원본 CLRNet | 문제 | HG-Lane 확장 |
+|---|---|---|---|
+| ④ | base config의 `val`이 `split='test'` | 학습 중 검증이 **test셋**으로 돌아 모델 선택에 test 누수 | `val`을 HG-Lane val(`list/val.txt`, 3,000장)로 지정. 카테고리는 파일 경로(`rain/…`)로 판별해서 val에서도 날씨별 점수 계산 |
+| ⑤ | `Runner.validate()`는 점수를 로그에만 남김 | **best 체크포인트가 저장되지 않음** (`save_ep`마다 저장하는 것뿐) | `HGRunner`가 val F1@50 최고일 때 `ckpt/best.pth` 저장 |
+| ⑥ | `total_iter = (88880 // batch) × epochs` | CULane 학습셋 크기로 계산된 cosine 스케줄이 HG-Lane(21,000장)과 안 맞음 | `total_iter`와 `scheduler.T_max`를 21,000 기준으로 다시 계산 |
+| ⑦ | `clrnet/ops/nms.py`가 torch 없이 `nms_impl.so`를 로드 | `hglane`을 먼저 import하면 `ImportError: libc10.so` | `hglane/__init__.py`에서 `torch`를 먼저 import (원본 `main.py`와 같은 순서) |
 
 ---
 
@@ -57,12 +71,12 @@ $CLRNET_ROOT/                         # git clone https://github.com/Turoad/CLRN
 │   ├── main_hglane.py
 │   ├── test_hglane_local.py
 │   ├── README.md
+│   ├── sbatch/test_r18_hglane.sh, train_r18_hglane_e2.sh
 │   └── hglane/
 │       ├── __init__.py
-│       ├── hglane_dataset.py
-│       ├── hglane_head.py
-│       └── clr_resnet18_hglane.py
-└── work_dirs/clr/r18_hglane/<실행시각>/   # 실행 결과 (자동 생성)
+│       ├── hglane_dataset.py, hglane_head.py, hglane_net.py, hglane_runner.py
+│       └── clr_resnet18_hglane.py, clr_resnet18_hglane_ft.py, clr_resnet18_hglane_e2.py
+└── work_dirs/clr/r18_hglane*/<실행시각>/  # 실행 결과 (자동 생성)
 ```
 
 HG-Lane 데이터셋 (`CULane_6x5k`) 구조:
@@ -132,10 +146,37 @@ python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane.py 
 
 로그 끝부분 예:
 ```
-normal  F1@50 xx.xx
-night   F1@50 xx.xx
+[test] normal  F1@50 xx.xx
+[test] night   F1@50 xx.xx
 ...
 metric: 0.xxxx          # 전체 6,000장 F1@50
+```
+
+### 4.1 파인튜닝 (E1 / E2)
+
+| 실험 | config | 학습 대상 |
+|---|---|---|
+| E1 전체 파인튜닝 | `clrnet_hglane/hglane/clr_resnet18_hglane_ft.py` | 전체 가중치 |
+| E2 부분 파인튜닝 | `clrnet_hglane/hglane/clr_resnet18_hglane_e2.py` | neck + head (백본 고정) |
+
+두 실험은 데이터·epoch·batch·lr·스케줄이 같고(`_ft.py`에서 상속), 학습 대상만 다릅니다.
+- 기본값: 15 epoch, batch 24, AdamW lr 1e-4, cosine, 매 epoch val 검증
+- 이 값들은 팀에서 정할 항목입니다. `_ft.py`만 고치면 E1·E2 모두 반영됩니다.
+
+```bash
+cd $CLRNET_ROOT
+python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane_e2.py \
+    --finetune_from culane_r18.pth --gpus 0
+# Slurm: sbatch clrnet_hglane/sbatch/train_r18_hglane_e2.sh
+```
+- `--finetune_from`: CULane 가중치에서 키가 일치하는 것만 불러옵니다 (CLRNet 원래 기능).
+- 결과: `work_dirs/clr/r18_hglane_e2/<시각>/ckpt/best.pth` (val F1@50 최고), `ckpt/14.pth` (마지막 epoch), `hglane_results_val.json` (마지막 val 결과)
+- E2 시작 시 로그에 `HGDetector: backbone frozen, trainable N / M params`가 찍힙니다.
+
+학습한 모델을 test로 평가할 때는 같은 config에 `--test --load_from <ckpt/best.pth>`를 줍니다.
+```bash
+python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane_e2.py \
+    --test --load_from work_dirs/clr/r18_hglane_e2/<시각>/ckpt/best.pth --gpus 0
 ```
 
 ---
@@ -192,12 +233,16 @@ metric: 0.xxxx          # 전체 6,000장 F1@50
 
 ```bash
 cd $CLRNET_ROOT
-python -I clrnet_hglane/test_hglane_local.py [CLRNet 경로] [HG-Lane 경로]
+python clrnet_hglane/test_hglane_local.py [CLRNet 경로] [HG-Lane 경로]
 # 기본값: CLRNet = clrnet_hglane/의 상위 폴더, HG-Lane = <CLRNet>/data/CULane_6x5k
 ```
-서버 전용 의존성(CUDA nms, mmcv 등)만 가짜 모듈로 대체하고, 실제 CLRNet 코드와 HG-Lane test 6,000장으로 다음을 확인합니다.
+설치되지 않은 의존성(CUDA nms, mmcv 등)만 가짜 모듈로 대체하고, 실제 CLRNet 코드와 HG-Lane 데이터로 다음을 확인합니다. 서버처럼 모두 설치된 환경에서는 아무것도 대체하지 않습니다.
 - `HGCLRHead`: 차선 좌표가 원본 `CLRHead`와 같음. `score`가 원본 필터링 점수와 같음. 후보마다 독립적으로 계산됨.
-- `HGLane.evaluate`: GT를 예측으로 넣으면 F1 ≈ 1. 일부러 넣은 가짜 차선은 `correct=false`. 차선별 TP 합계가 공식 TP와 같음.
+- `HGLane` test: GT를 예측으로 넣으면 F1 ≈ 1. 일부러 넣은 가짜 차선은 `correct=false`. 차선별 TP 합계가 공식 TP와 같음. 경로로 판별한 카테고리가 공식 `test_split`과 같음.
+- `HGLane` val / train: 3,000장(날씨별 500, 번호 3500–3999) / 21,000장(세그 라벨 모두 존재, 번호 0–3499).
+- `HGDetector`: 백본에 기울기 없음, BN 통계 변화 없음, AdamW 한 스텝 후에도 백본 가중치 그대로.
+- `HGRunner`: 학습 중 val 점수가 오를 때만 `best.pth` 저장.
+- config (`addict`가 설치된 환경): E1/E2 상속·병합 결과 (split, net, total_iter, lr).
 ---
 
 ## 7. 주의사항

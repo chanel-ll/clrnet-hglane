@@ -1,10 +1,13 @@
 """HG-Lane(CULane_6x5k) 데이터셋. 데이터 포맷은 CULane과 동일 → CULane 클래스를 상속.
 
 원본 CULane과 다른 점 (원본 파일은 수정하지 않음):
-1. CATEGORYS: CULane 9개 → HG-Lane 6개 (normal/night/dusk/rain/snow/fog)
-2. 캐시 미사용: 원본은 cache/culane_{split}.pkl을 재사용해 CULane 목록이 섞임. 6천 장이라 매번 읽어도 빠름
-3. evaluate: 원본과 같은 .lines.txt 출력 + 공식 metric 후, 시각화용 hglane_results.json 저장
+1. 카테고리: CULane 9개 → HG-Lane 6개 (normal/night/dusk/rain/snow/fog).
+   파일 경로 앞부분(`rain/rain_4000.jpg` → rain)으로 판별 → test/val 어느 split이든 동작
+2. 캐시 미사용: 원본은 cache/culane_{split}.pkl을 재사용해 CULane 목록이 섞임
+3. evaluate: 원본과 같은 .lines.txt 출력 + 공식 metric 후, 시각화용 JSON 저장
+   (test: hglane_results.json, val: hglane_results_val.json)
    (카테고리별 지표, 이미지별 차선 좌표·신뢰도·GT 매칭 결과, 프레임 가시성 점수)
+4. 마지막 평가의 F1@50을 self.last_metric에 남김 → HGRunner가 val 기준 best 체크포인트 저장에 사용
 """
 import json
 import os
@@ -19,14 +22,7 @@ import clrnet.utils.culane_metric as culane_metric
 from clrnet.datasets.culane import CULane
 from clrnet.datasets.registry import DATASETS
 
-CATEGORYS = {
-    'normal': 'list/test_split/test0_normal.txt',
-    'night': 'list/test_split/test1_night.txt',
-    'dusk': 'list/test_split/test2_dusk.txt',
-    'rain': 'list/test_split/test3_rain.txt',
-    'snow': 'list/test_split/test4_snow.txt',
-    'fog': 'list/test_split/test5_fog.txt',
-}
+CATEGORIES = ('normal', 'night', 'dusk', 'rain', 'snow', 'fog')
 IOU_THR = 0.5
 IMG_SHAPE = (590, 1640, 3)
 
@@ -80,10 +76,18 @@ class HGLane(CULane):
                 f.write(self.get_prediction_string(pred))
 
         # 2) 공식 metric: 카테고리별 F1@50, 전체 F1@50~95
+        #    카테고리 목록은 이 split의 이미지를 경로 앞부분으로 나눠 work_dir에 만듦 (test면 test_split과 동일)
+        list_dir = osp.join(output_basedir, 'hglane_lists')
+        os.makedirs(list_dir, exist_ok=True)
         categories = {}
-        for cate, cate_file in CATEGORYS.items():
-            ret = culane_metric.eval_predictions(output_basedir, self.data_root,
-                                                 osp.join(self.data_root, cate_file),
+        for cate in CATEGORIES:
+            names = [i['img_name'] for i in self.data_infos if i['img_name'].split('/')[0] == cate]
+            if not names:
+                continue
+            cate_file = osp.join(list_dir, f'{self.split}_{cate}.txt')
+            with open(cate_file, 'w') as f:
+                f.write('\n'.join(names) + '\n')
+            ret = culane_metric.eval_predictions(output_basedir, self.data_root, cate_file,
                                                  iou_thresholds=[IOU_THR], official=True)
             categories[cate] = ret[IOU_THR]
         overall = culane_metric.eval_predictions(output_basedir, self.data_root, self.list_path,
@@ -91,13 +95,6 @@ class HGLane(CULane):
                                                  official=True)
 
         # 3) 이미지별 시각화 데이터
-        cate_of = {}
-        for cate, cate_file in CATEGORYS.items():
-            with open(osp.join(self.data_root, cate_file)) as f:
-                for l in f:
-                    if l.strip():
-                        cate_of[l.strip().lstrip('/')] = cate
-
         images, jobs = [], []
         for info, pred in zip(self.data_infos, predictions):
             lanes = []
@@ -114,7 +111,7 @@ class HGLane(CULane):
             scores = [l['score'] for l in lanes if l['score'] is not None]
             images.append({
                 'img_name': info['img_name'],
-                'category': cate_of.get(info['img_name']),
+                'category': info['img_name'].split('/')[0],
                 'visibility': round(float(np.mean(scores)), 4) if scores else 0.0,
                 'lanes': lanes,
                 'gt_lanes': [[[round(x, 2), round(y, 2)] for x, y in g] for g in gt],
@@ -132,8 +129,8 @@ class HGLane(CULane):
 
         result = {
             'meta': {
-                'dataset': 'HG-Lane', 'data_root': self.data_root, 'list': self.list_path,
-                'checkpoint': getattr(self.cfg, 'load_from', None),
+                'dataset': 'HG-Lane', 'split': self.split, 'data_root': self.data_root, 'list': self.list_path,
+                'checkpoint': getattr(self.cfg, 'load_from', None) or getattr(self.cfg, 'finetune_from', None),
                 'conf_threshold': self.cfg.test_parameters.conf_threshold,
                 'nms_thres': self.cfg.test_parameters.nms_thres,
                 'iou_threshold': IOU_THR,
@@ -146,11 +143,13 @@ class HGLane(CULane):
             'metrics': {'overall': _metric_dict(overall), 'categories': categories},
             'images': images,
         }
-        json_path = osp.join(output_basedir, 'hglane_results.json')
+        name = 'hglane_results.json' if self.split == 'test' else f'hglane_results_{self.split}.json'
+        json_path = osp.join(output_basedir, name)  # 학습 중 val은 매 평가마다 덮어씀 (마지막 epoch 기준)
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False)
         self.logger.info(f'HG-Lane 결과 저장: {json_path}')
         for cate, r in categories.items():
-            self.logger.info(f'{cate:7s} F1@50 {r["F1"] * 100:.2f}')
+            self.logger.info(f'[{self.split}] {cate:7s} F1@50 {r["F1"] * 100:.2f}')
 
-        return overall[IOU_THR]['F1']
+        self.last_metric = overall[IOU_THR]['F1']
+        return self.last_metric
