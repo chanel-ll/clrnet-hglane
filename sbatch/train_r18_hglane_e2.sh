@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=29G
 #SBATCH -p batch_ugrad
-#SBATCH -w ariel-v10
+#SBATCH -w ariel-v12
 #SBATCH -t 1-0
 #SBATCH -o sbatch/logs/clr-r18-HGLane_e2-%A.out
 # 학습은 재큐되면 처음부터 다시 시작하므로 --requeue는 넣지 않음
