@@ -3,5 +3,5 @@
 import torch  # noqa: F401
 
 # import만으로 CLRNet registry에 HGLane(데이터셋), HGCLRHead(헤드), HGDetector(E2 넷) 등록
-from . import hglane_dataset, hglane_head, hglane_net  # noqa: F401,E402
+from . import hglane_dataset, hglane_head, hglane_net, hglane_pair  # noqa: F401,E402
 from .hglane_runner import HGRunner  # noqa: F401,E402

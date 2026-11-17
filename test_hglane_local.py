@@ -8,6 +8,7 @@
 - HGLane val: 3,000장, hglane_results_val.json, last_metric
 - HGLane train: 21,000장, 세그 라벨 파일 존재, lane_exist
 - HGDetector(E2): 백본 requires_grad=False, train() 후에도 백본 BN은 eval
+- E4: HGLanePair 짝 경로(같은 번호 normal), HGConsistencyDetector 교사 고정·일관성 손실
 - HGRunner: 학습 중 val 점수가 오를 때만 best 저장
 - config (addict 있을 때): ft/e2 상속·병합 결과
 """
@@ -59,6 +60,7 @@ import hglane  # noqa: E402  (registry 등록)
 from hglane.hglane_dataset import CATEGORIES, HGLane  # noqa: E402
 from hglane.hglane_head import HGCLRHead  # noqa: E402
 from hglane.hglane_net import HGDetector  # noqa: E402
+from hglane import hglane_pair  # noqa: E402
 from hglane.hglane_runner import HGRunner  # noqa: E402
 from clrnet.datasets.registry import DATASETS  # noqa: E402
 from clrnet.engine.runner import Runner  # noqa: E402
@@ -182,6 +184,85 @@ def test_e2_net():
     print('[E2] backbone frozen (grad, BN stats, AdamW) OK')
 
 
+def test_e4_pair():
+    ds = hglane_pair.HGLanePair.__new__(hglane_pair.HGLanePair)
+    ds.data_root = str(DATA)
+    infos = HGLane(str(DATA), 'train', processes=[], cfg=CFG).data_infos
+    refs = [ds.ref_path(i['img_name']) for i in infos]
+    assert all(r.endswith('/normal/normal_' + i['img_name'].split('_')[-1]) for r, i in zip(refs, infos))
+    assert all(os.path.exists(r) for r in set(refs)) and len(set(refs)) == 3500
+    print('[E4] 21000 train -> 3500 paired normal images, all exist')
+
+
+def test_e4_net():
+    NetCls = hglane_pair.HGConsistencyDetector
+    assert NETS.get('HGConsistencyDetector') is NetCls and DATASETS.get('HGLanePair') is hglane_pair.HGLanePair
+
+    class Bb(nn.Module):  # 백본: 특징 3개 레벨 (list)
+        def __init__(self):
+            super().__init__(); self.c = nn.Conv2d(3, 4, 1); self.bn = nn.BatchNorm2d(4)
+        def forward(self, x):
+            f = self.bn(self.c(x)); return [f, f[..., ::2, ::2], f[..., ::4, ::4]]
+
+    class Nk(nn.Module):  # FPN처럼 tuple 반환
+        def __init__(self):
+            super().__init__(); self.c = nn.Conv2d(4, 4, 1)
+        def forward(self, xs):
+            return tuple(self.c(x) for x in xs)
+
+    class Hd(nn.Module):
+        def __init__(self):
+            super().__init__(); self.w = nn.Parameter(torch.ones(1))
+        def forward(self, fea, batch=None):
+            lane = sum(f.mean() for f in fea) * self.w
+            return {'loss': lane, 'loss_stats': {'loss': lane}} if self.training else lane
+
+    def fake_init(self, cfg):
+        nn.Module.__init__(self)
+        self.cfg, self.backbone, self.aggregator, self.neck, self.heads = cfg, Bb(), None, Nk(), Hd()
+
+    torch.manual_seed(0)
+    culane = nn.Module()
+    fake_init(culane, None)
+    ckpt = Path(tempfile.mkdtemp()) / 'culane.pth'
+    torch.save({'net': {'module.' + k: v for k, v in nn.ModuleDict(
+        dict(backbone=culane.backbone, neck=culane.neck, heads=culane.heads)).state_dict().items()}}, ckpt)
+
+    orig = (Detector.__init__, hglane_pair.build_backbones, hglane_pair.build_necks)
+    Detector.__init__, hglane_pair.build_backbones, hglane_pair.build_necks = fake_init, lambda c: Bb(), lambda c: Nk()
+    try:
+        cfg = types.SimpleNamespace(finetune_from=str(ckpt), consistency_weight=2.0)
+        net = NetCls(cfg)
+        test_net = NetCls(types.SimpleNamespace(finetune_from=None))
+    finally:
+        Detector.__init__, hglane_pair.build_backbones, hglane_pair.build_necks = orig
+    assert test_net.teacher is None  # 평가용(--load_from)에는 교사 없음
+    t_sd = net.teacher.state_dict()
+    assert all(torch.equal(t_sd[k], v) for k, v in culane.backbone.state_dict().items() for k in ['backbone.' + k])
+    assert not any(p.requires_grad for p in net.teacher.parameters())
+    nn.Sequential(net).train()
+    assert net.backbone.training and not net.teacher.training  # 교사 BN 고정
+
+    net.load_state_dict({k: v for k, v in t_sd.items()}, strict=False)  # 학생 = 교사 (finetune_from 효과)
+    img = torch.randn(2, 3, 8, 8)
+    net.backbone.bn.eval()  # 학생 BN도 running 통계로 맞춰야 교사와 완전히 같아짐 (학습 중엔 배치 통계라 0이 아님)
+    out = net({'img': img, 'img_ref': img})
+    assert abs(float(out['loss_stats']['cons_loss'].detach())) < 1e-6  # 같은 모델·같은 이미지 → 일관성 0
+    net.backbone.bn.train()
+    out = net({'img': img + torch.randn_like(img), 'img_ref': img})
+    cons = out['loss_stats']['cons_loss']
+    assert float(cons) > 0 and torch.allclose(out['loss'], out['loss_stats']['loss'])
+    t0 = [p.clone() for p in net.teacher.parameters()]
+    opt = torch.optim.AdamW(net.parameters(), lr=1e-2)
+    w0 = net.backbone.c.weight.clone()
+    out['loss'].backward(); opt.step()
+    assert net.backbone.c.weight.grad is not None and not torch.equal(w0, net.backbone.c.weight)
+    assert all(torch.equal(a, b) for a, b in zip(t0, net.teacher.parameters()))  # 교사는 안 변함
+    net.eval()
+    assert torch.is_tensor(net({'img': img}))  # 평가 경로는 원본 Detector.forward
+    print(f'[E4] teacher frozen, cons_loss {float(cons):.4f} (weight 2.0), eval path = Detector OK')
+
+
 def test_runner():
     r = HGRunner.__new__(HGRunner)
     r.metric = 0.
@@ -221,6 +302,13 @@ def test_configs():
     assert c.work_dirs == 'work_dirs/clr/r18_hglane_e2' and c.test_parameters.conf_threshold == 0.4
     e1 = Config.fromfile(str(HERE / 'hglane/clr_resnet18_hglane_ft.py'))
     assert e1.net.type == 'Detector' and e1.dataset.val.split == 'val'
+    e3 = Config.fromfile(str(HERE / 'hglane/clr_resnet18_hglane_e3.py'))
+    assert e3.net.type == 'Detector' and e3.backbone.pretrained and e3.optimizer.lr == 6e-4
+    assert (e3.epochs, e3.batch_size, e3.total_iter, e3.dataset.val.split) == (15, 24, c.total_iter, 'val')
+    e4 = Config.fromfile(str(HERE / 'hglane/clr_resnet18_hglane_e4.py'))
+    assert e4.net.type == 'HGConsistencyDetector' and e4.consistency_weight == 1.0 and e4.optimizer.lr == 1e-4
+    assert (e4.dataset.train.type, e4.dataset.train.split, len(e4.dataset.train.processes)) == ('HGLanePair', 'train', 2)
+    assert e4.dataset.val.type == 'HGLane' and e4.work_dirs == 'work_dirs/clr/r18_hglane_e4'
     print(f'[config] e2: net {c.net.type}, train/val/test splits OK, total_iter {c.total_iter}, lr {c.optimizer.lr}')
 
 
@@ -231,6 +319,8 @@ if __name__ == '__main__':
     test_dataset_val(Path(tempfile.mkdtemp()))
     test_dataset_train()
     test_e2_net()
+    test_e4_pair()
+    test_e4_net()
     test_runner()
     test_configs()
     print('ALL OK')

@@ -19,15 +19,18 @@
 | 파일 (`clrnet_hglane/` 안) | 역할 |
 |---|---|
 | `main_hglane.py` | 실행 진입점. CLRNet 루트를 import 경로에 추가하고, `hglane`을 registry에 등록하고, 원본 `main` 모듈의 `Runner`를 `HGRunner`로 바꾼 뒤 원본 `main()`을 그대로 실행 (인자 동일). CLRNet 루트가 아닌 곳에서 실행하면 안내 메시지를 내고 종료 |
-| `hglane/__init__.py` | `torch`를 먼저 import(아래 참고)한 뒤 `HGLane`·`HGCLRHead`·`HGDetector`를 CLRNet registry에 등록 |
+| `hglane/__init__.py` | `torch`를 먼저 import(아래 참고)한 뒤 `HGLane`·`HGCLRHead`·`HGDetector`·`HGLanePair`·`HGConsistencyDetector`를 CLRNet registry에 등록 |
 | `hglane/hglane_dataset.py` | `HGLane(CULane)`: 데이터셋 클래스 (train / val / test) |
 | `hglane/hglane_head.py` | `HGCLRHead(CLRHead)`: 차선별 신뢰도 기록 |
 | `hglane/hglane_net.py` | `HGDetector(Detector)`: **E2 부분 파인튜닝**. 백본 고정 (가중치 + BatchNorm 통계) |
+| `hglane/hglane_pair.py` | **E4** 날씨 불변 일관성 학습. `HGLanePair(HGLane)`: `<조건>_N`과 같은 번호 `normal_N`을 같은 증강으로 함께 반환. `HGConsistencyDetector(Detector)`: 고정된 CULane 교사(normal 입력)와 학생(악천후 입력)의 FPN 특징 일관성 손실 추가 |
 | `hglane/hglane_runner.py` | `HGRunner(Runner)`: 학습 중 val F1@50이 최고일 때 `ckpt/best.pth` 저장 |
 | `hglane/clr_resnet18_hglane.py` | 평가 config. `_base_ = '../../configs/clrnet/clr_resnet18_culane.py'`를 상속하고 head·dataset 종류와 경로만 바꿈 |
 | `hglane/clr_resnet18_hglane_ft.py` | 공통 파인튜닝 config (= **E1** 전체 파인튜닝). HG-Lane train으로 학습, val로 검증 |
 | `hglane/clr_resnet18_hglane_e2.py` | **E2** config. 공통 파인튜닝 config에서 `net`만 `HGDetector`로 바꿈 |
-| `sbatch/*.sh` | Slurm 제출 스크립트 (HG-Lane test 평가, E2 학습) |
+| `hglane/clr_resnet18_hglane_e3.py` | **E3** config. CULane 가중치 없이 ImageNet 백본에서 시작 (lr 6e-4) |
+| `hglane/clr_resnet18_hglane_e4.py` | **E4** config. `net`·`dataset.train`만 바꾸고 `consistency_weight` 추가 |
+| `sbatch/*.sh` | Slurm 제출 스크립트 (HG-Lane test 평가, 학습 + test 평가, E2 학습) |
 | `test_hglane_local.py` | GPU 없이 하는 로컬 검증 (선택) |
 
 config 파일은 모두 **ASCII만 사용**합니다. CLRNet Config가 locale 기본 인코딩으로 파일을 읽기 때문입니다.
@@ -71,11 +74,11 @@ $CLRNET_ROOT/                         # git clone https://github.com/Turoad/CLRN
 │   ├── main_hglane.py
 │   ├── test_hglane_local.py
 │   ├── README.md
-│   ├── sbatch/test_r18_hglane.sh, train_r18_hglane_e2.sh
+│   ├── sbatch/test_r18_hglane.sh, train_r18_hglane.sh, train_r18_hglane_e2.sh
 │   └── hglane/
 │       ├── __init__.py
-│       ├── hglane_dataset.py, hglane_head.py, hglane_net.py, hglane_runner.py
-│       └── clr_resnet18_hglane.py, clr_resnet18_hglane_ft.py, clr_resnet18_hglane_e2.py
+│       ├── hglane_dataset.py, hglane_head.py, hglane_net.py, hglane_pair.py, hglane_runner.py
+│       └── clr_resnet18_hglane.py, _ft.py, _e2.py, _e3.py, _e4.py
 └── work_dirs/clr/r18_hglane*/<실행시각>/  # 실행 결과 (자동 생성)
 ```
 
@@ -152,14 +155,16 @@ python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane.py 
 metric: 0.xxxx          # 전체 6,000장 F1@50
 ```
 
-### 4.1 파인튜닝 (E1 / E2)
+### 4.1 학습 (E1 / E2 / E3 / E4)
 
 | 실험 | config | 학습 대상 |
 |---|---|---|
 | E1 전체 파인튜닝 | `clrnet_hglane/hglane/clr_resnet18_hglane_ft.py` | 전체 가중치 |
 | E2 부분 파인튜닝 | `clrnet_hglane/hglane/clr_resnet18_hglane_e2.py` | neck + head (백본 고정) |
+| E3 처음부터 | `clrnet_hglane/hglane/clr_resnet18_hglane_e3.py` | 전체 (ImageNet 백본, neck·head 랜덤 초기화). `--finetune_from` 없이 실행 |
+| E4 일관성 | `clrnet_hglane/hglane/clr_resnet18_hglane_e4.py` | 전체 + 일관성 손실 (교사 = 고정 CULane 모델) |
 
-두 실험은 데이터·epoch·batch·lr·스케줄이 같고(`_ft.py`에서 상속), 학습 대상만 다릅니다.
+모든 실험은 데이터·epoch·batch·스케줄이 같습니다(`_ft.py`에서 상속). E3만 lr이 6e-4(CLRNet 원래 값, 처음부터 학습)입니다.
 - 기본값: 15 epoch, batch 24, AdamW lr 1e-4, cosine, 매 epoch val 검증
 - 이 값들은 팀에서 정할 항목입니다. `_ft.py`만 고치면 E1·E2 모두 반영됩니다.
 
@@ -169,6 +174,17 @@ python clrnet_hglane/main_hglane.py clrnet_hglane/hglane/clr_resnet18_hglane_e2.
     --finetune_from culane_r18.pth --gpus 0
 # Slurm: sbatch clrnet_hglane/sbatch/train_r18_hglane_e2.sh
 ```
+
+`sbatch/train_r18_hglane.sh`는 학습이 끝나면 같은 잡에서 `best.pth`로 test 평가까지 합니다 (`-J`가 로그 이름).
+```bash
+sbatch -J clr-r18-HGLane_e3 clrnet_hglane/sbatch/train_r18_hglane.sh clrnet_hglane/hglane/clr_resnet18_hglane_e3.py
+sbatch -J clr-r18-HGLane_e4 clrnet_hglane/sbatch/train_r18_hglane.sh clrnet_hglane/hglane/clr_resnet18_hglane_e4.py --finetune_from culane_r18.pth
+```
+E4 동작:
+- 학습 샘플 `<조건>_N`마다 `normal_N`을 읽어 **같은 증강**(imgaug `to_deterministic`)을 적용합니다. worker마다 처음 normal 샘플에서 두 결과가 완전히 같은지 assert로 확인합니다.
+- 교사 = `--finetune_from`의 백본 + FPN (고정, eval 모드). 학생 = 학습 중인 모델 (같은 가중치에서 시작).
+- `loss = 차선 손실 + consistency_weight × mean(1 − cos(학생 FPN 특징(<조건>_N), 교사 FPN 특징(normal_N)))`. FPN 3개 레벨, 위치별 채널 벡터 cosine. 로그에 `cons_loss`로 찍힙니다.
+- normal 샘플은 교사와 같은 이미지라서 맑은 날 성능을 유지하는 역할도 합니다. 평가(`--test --load_from`)에는 학생만 쓰고, 체크포인트의 `teacher.*` 키는 무시됩니다.
 - `--finetune_from`: CULane 가중치에서 키가 일치하는 것만 불러옵니다 (CLRNet 원래 기능).
 - 결과: `work_dirs/clr/r18_hglane_e2/<시각>/ckpt/best.pth` (val F1@50 최고), `ckpt/14.pth` (마지막 epoch), `hglane_results_val.json` (마지막 val 결과)
 - E2 시작 시 로그에 `HGDetector: backbone frozen, trainable N / M params`가 찍힙니다.
