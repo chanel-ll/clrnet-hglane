@@ -31,6 +31,7 @@
 | `hglane/clr_resnet18_hglane_e3.py` | **E3** config. CULane 가중치 없이 ImageNet 백본에서 시작 (lr 6e-4) |
 | `hglane/clr_resnet18_hglane_e4.py` | **E4** config. `net`·`dataset.train`만 바꾸고 `consistency_weight` 추가 |
 | `hglane/clr_resnet18_dashcam.py` | 실제 블랙박스 영상 추론 config. `data/rainy_drivescene_culane` (상위 프로젝트의 `scripts/convert_dashcam_to_culane.py`로 변환, GT 없음 → F1 무의미, JSON의 차선·score만 사용). E0~E4 어떤 체크포인트든 `--test --load_from` |
+| `hglane/clr_resnet18_dashcam_1124.py` | 블랙박스 2차 데이터 `data/rainy_1124_culane` 추론 config (위 config 상속, 경로만 다름) |
 | `sbatch/*.sh` | Slurm 제출 스크립트 (HG-Lane test 평가, 학습 + test 평가, E2 학습) |
 | `test_hglane_local.py` | GPU 없이 하는 로컬 검증 (선택) |
 
